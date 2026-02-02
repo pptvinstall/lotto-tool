@@ -3,284 +3,319 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>GA Lottery Ultimate Math System</title>
+    <title>GA Lottery Ultimate Math System v2</title>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;900&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #0f172a; }
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; overscroll-behavior: none; }
         .mono { font-family: 'JetBrains Mono', monospace; }
-        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
-        .animate-pulse-fast { animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .input-glass { background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); color: white; }
         @keyframes shine { to { background-position: 200% center; } }
         .shine-text { background: linear-gradient(to right, #fbbf24, #fff, #fbbf24); background-size: 200% auto; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: shine 3s linear infinite; }
+        .ball-shadow { box-shadow: inset -4px -4px 6px rgba(0,0,0,0.4), inset 2px 2px 6px rgba(255,255,255,0.4), 0px 4px 6px rgba(0,0,0,0.3); }
     </style>
 </head>
-<body class="text-white min-h-screen pb-20">
+<body class="text-white min-h-screen pb-20 select-none">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useRef } = React;
 
-        // --- MATHEMATICAL ENGINES (LOGIC LAYER) ---
+        // --- MATH & UTILS ---
         
-        // 1. Monte Carlo Simulation Engine
-        const runMonteCarlo = (config, iterations = 1000) => {
-            const counts = {};
-            for(let i=1; i<=config.max; i++) counts[i] = 0;
-            
-            for(let i=0; i<iterations; i++) {
-                // Simulate a weighted draw (favoring hot numbers slightly to simulate bias)
-                const draw = [];
-                while(draw.length < config.count) {
-                    const num = Math.floor(Math.random() * config.max) + 1;
-                    if(!draw.includes(num)) {
-                        draw.push(num);
-                        counts[num]++;
-                    }
-                }
-            }
-            return counts;
+        const formatMoney = (amount) => {
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(amount);
         };
 
-        // 2. Entropy Calculation
-        const calculateEntropy = (numbers) => {
-            // Shannon Entropy simulation
-            const unique = new Set(numbers).size;
-            const probability = 1 / unique;
-            return -(unique * probability * Math.log2(probability)).toFixed(3);
-        };
+        const calculateTaxes = (jackpotValue) => {
+            // Estimates based on standard lump sum ratio (~48%) and 2025 Tax Rates
+            const cashValue = jackpotValue * 0.48; 
+            const fedTax = cashValue * 0.24; // 24% upfront federal
+            const stateTax = cashValue * 0.0575; // 5.75% GA state tax
+            const totalTax = fedTax + stateTax;
+            const takeHome = cashValue - totalTax;
 
-        // 3. Bayesian Weighting
-        const bayesianUpdate = (prior, evidence) => {
-            // Simple Bayes: Posterior = (Likelihood * Prior) / Evidence
-            const likelihood = evidence ? 1.5 : 0.8; 
-            return (likelihood * prior).toFixed(4);
+            return {
+                cashValue,
+                fedTax,
+                stateTax,
+                takeHome
+            };
         };
 
         const LotteryApp = () => {
-            const [selectedGame, setSelectedGame] = useState('fantasy5');
+            const [selectedGame, setSelectedGame] = useState('powerball');
             const [isAnalyzing, setIsAnalyzing] = useState(false);
             const [progress, setProgress] = useState(0);
             const [results, setResults] = useState(null);
-            const [engineStats, setEngineStats] = useState({});
-
+            const [customJackpot, setCustomJackpot] = useState(20000000); // Default start
+            
+            // GAME CONFIGURATIONS
             const games = {
-                powerball: { name: 'Powerball', max: 69, count: 5, color: 'from-red-600 to-rose-900', jackpot: '$78M' },
-                megamillions: { name: 'Mega Millions', max: 70, count: 5, color: 'from-blue-600 to-indigo-900', jackpot: '$323M' },
-                fantasy5: { name: 'Fantasy 5', max: 42, count: 5, color: 'from-amber-500 to-orange-700', jackpot: '$125K' },
-                cash4life: { name: 'Cash4Life', max: 60, count: 5, color: 'from-emerald-500 to-green-800', jackpot: '$1K/Day' }
+                powerball: { 
+                    name: 'Powerball', 
+                    mainMax: 69, mainCount: 5, 
+                    specialMax: 26, specialName: 'PB', hasSpecial: true,
+                    color: 'from-red-600 to-rose-900', 
+                    accent: 'bg-red-500' 
+                },
+                megamillions: { 
+                    name: 'Mega Millions', 
+                    mainMax: 70, mainCount: 5, 
+                    specialMax: 25, specialName: 'MB', hasSpecial: true,
+                    color: 'from-blue-600 to-indigo-900', 
+                    accent: 'bg-blue-500' 
+                },
+                fantasy5: { 
+                    name: 'Fantasy 5', 
+                    mainMax: 42, mainCount: 5, 
+                    hasSpecial: false,
+                    color: 'from-amber-500 to-orange-700', 
+                    accent: 'bg-orange-500' 
+                },
+                cash4life: { 
+                    name: 'Cash4Life', 
+                    mainMax: 60, mainCount: 5, 
+                    specialMax: 4, specialName: 'CB', hasSpecial: true,
+                    color: 'from-emerald-500 to-green-800', 
+                    accent: 'bg-emerald-500' 
+                }
             };
 
             const currentGame = games[selectedGame];
+            const taxInfo = calculateTaxes(customJackpot);
 
-            // THE MASTER ALGORITHM
+            // Handle Game Switch (Reset Logic)
+            const switchGame = (key) => {
+                setSelectedGame(key);
+                setResults(null);
+                setIsAnalyzing(false);
+                setProgress(0);
+                // Set meaningful defaults for jackpots when switching
+                if(key === 'fantasy5') setCustomJackpot(125000);
+                else if(key === 'cash4life') setCustomJackpot(7000000); // Lifetime value approx
+                else setCustomJackpot(100000000);
+            };
+
+            const resetSystem = () => {
+                setResults(null);
+                setIsAnalyzing(false);
+                setProgress(0);
+            };
+
+            // THE SIMULATION ENGINE
             const runAnalysis = () => {
                 setIsAnalyzing(true);
                 setProgress(0);
                 setResults(null);
 
-                // Simulation of the 12-step process described in Markdown
                 let step = 0;
-                const totalSteps = 12;
                 const interval = setInterval(() => {
-                    step++;
-                    setProgress(Math.round((step / totalSteps) * 100));
-                    
-                    if (step >= totalSteps) {
+                    step += 2;
+                    setProgress(step);
+                    if (step >= 100) {
                         clearInterval(interval);
-                        generateFinalNumbers();
+                        finalizeNumbers();
                     }
-                }, 150); // Speed of "calculation" animation
+                }, 30);
             };
 
-            const generateFinalNumbers = () => {
-                // This utilizes the Monte Carlo engine to pick the "Smart" numbers
-                const monteCarloResults = runMonteCarlo(currentGame, 5000);
+            const finalizeNumbers = () => {
+                const pick = { main: [], special: null };
                 
-                // Sort by frequency (The "Hot" numbers from simulation)
-                const sortedNums = Object.keys(monteCarloResults).sort((a,b) => monteCarloResults[b] - monteCarloResults[a]);
+                // 1. Generate Main Numbers (Monte Carlo Lite)
+                // We create a "pool" and pick randoms to simulate high-entropy selection
+                const mainPool = Array.from({length: currentGame.mainMax}, (_, i) => i + 1);
                 
-                // Select top numbers based on "Ensemble" logic (Top tier + random high entropy pick)
-                const pool = sortedNums.slice(0, 15); // Top 15 candidates
-                const finalPick = [];
-                
-                while(finalPick.length < currentGame.count) {
-                    const idx = Math.floor(Math.random() * pool.length);
-                    const num = parseInt(pool[idx]);
-                    if(!finalPick.includes(num)) {
-                        finalPick.push(num);
-                    }
+                // Fisher-Yates Shuffle for true randomness
+                for (let i = mainPool.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [mainPool[i], mainPool[j]] = [mainPool[j], mainPool[i]];
                 }
                 
-                finalPick.sort((a,b) => a-b);
+                // Take top N numbers
+                pick.main = mainPool.slice(0, currentGame.mainCount).sort((a,b) => a-b);
 
-                // Generate fancy stats for the UI
-                const stats = {
-                    entropy: calculateEntropy(finalPick),
-                    monteCarlo: '5,000 Draws',
-                    bayesian: '94.2%',
-                    neuralNet: 'Confident',
-                    cycle: 'Peaking'
-                };
+                // 2. Generate Special Ball (if needed)
+                if (currentGame.hasSpecial) {
+                    pick.special = Math.floor(Math.random() * currentGame.specialMax) + 1;
+                }
 
-                setEngineStats(stats);
-                setResults(finalPick);
+                setResults(pick);
                 setIsAnalyzing(false);
             };
 
             return (
-                <div className="max-w-md mx-auto min-h-screen bg-slate-900 text-slate-100 flex flex-col">
+                <div className="max-w-md mx-auto min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
                     
                     {/* Header */}
-                    <div className="p-6 bg-gradient-to-b from-slate-800 to-slate-900 border-b border-slate-700">
-                        <div className="flex justify-between items-center mb-4">
-                            <h1 className="text-2xl font-black italic tracking-tighter shine-text">
-                                GA LOTTERY<br/>MATH SYSTEM
+                    <div className="p-4 bg-slate-900/80 border-b border-slate-800 backdrop-blur-md sticky top-0 z-50">
+                        <div className="flex justify-between items-center mb-3">
+                            <h1 className="text-xl font-black italic tracking-tighter text-white">
+                                <span className="text-yellow-400">GA</span> LOTTERY LAB
                             </h1>
-                            <div className="bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/20 animate-pulse">
-                                ONLINE
+                            <div className="text-[10px] bg-slate-800 px-2 py-1 rounded text-slate-400 border border-slate-700">
+                                v2.0 SYSTEM READY
                             </div>
                         </div>
 
-                        {/* Game Selector */}
-                        <div className="grid grid-cols-4 gap-2">
+                        {/* Game Selector Tabs */}
+                        <div className="grid grid-cols-4 gap-1 p-1 bg-slate-900 rounded-lg border border-slate-800">
                             {Object.entries(games).map(([key, game]) => (
                                 <button
                                     key={key}
-                                    onClick={() => setSelectedGame(key)}
-                                    className={`p-2 rounded-lg text-[10px] font-bold transition-all ${
+                                    onClick={() => switchGame(key)}
+                                    className={`py-2 rounded-md text-[10px] font-bold transition-all ${
                                         selectedGame === key 
-                                        ? `bg-gradient-to-br ${game.color} shadow-lg scale-105 border border-white/20` 
-                                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                                        ? `bg-slate-700 text-white shadow-sm ring-1 ring-slate-600` 
+                                        : 'text-slate-500 hover:text-slate-300'
                                     }`}
                                 >
-                                    {game.name.split(' ')[0]}
+                                    {game.name.replace(' ', '\n')}
                                 </button>
                             ))}
                         </div>
                     </div>
 
-                    {/* Main Content */}
-                    <div className="flex-1 p-6 space-y-6">
+                    <div className="flex-1 p-4 space-y-5 overflow-y-auto">
                         
-                        {/* Jackpot Card */}
-                        <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${currentGame.color} p-6 shadow-2xl`}>
-                            <div className="relative z-10">
-                                <div className="text-white/80 text-sm font-semibold mb-1 uppercase tracking-wider">{currentGame.name}</div>
-                                <div className="text-4xl font-black text-white drop-shadow-md">{currentGame.jackpot}</div>
-                                <div className="mt-2 inline-flex items-center gap-2 bg-black/20 px-3 py-1 rounded-full text-xs backdrop-blur-sm">
-                                    <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-                                    Est. Cash Value Available
+                        {/* 1. JACKPOT EDITOR & CALCULATOR */}
+                        <div className={`rounded-xl bg-gradient-to-br ${currentGame.color} p-0.5 shadow-xl`}>
+                            <div className="bg-slate-900/90 rounded-[10px] p-4 backdrop-blur-xl">
+                                <div className="flex justify-between items-start mb-4">
+                                    <div>
+                                        <label className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Current Jackpot</label>
+                                        <div className="flex items-center gap-2 mt-1">
+                                            <span className="text-lg text-slate-400">$</span>
+                                            <input 
+                                                type="number" 
+                                                value={customJackpot}
+                                                onChange={(e) => setCustomJackpot(Number(e.target.value))}
+                                                className="bg-transparent text-2xl font-black text-white w-full focus:outline-none border-b border-slate-600 focus:border-yellow-400 transition-colors"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="text-[10px] text-slate-500">Tap number to edit</div>
+                                    </div>
+                                </div>
+
+                                {/* Tax Breakdown Grid */}
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div className="bg-black/20 p-2 rounded">
+                                        <div className="text-slate-400 mb-1">Cash Option</div>
+                                        <div className="font-mono font-bold text-white">{formatMoney(taxInfo.cashValue)}</div>
+                                    </div>
+                                    <div className="bg-emerald-500/10 p-2 rounded border border-emerald-500/20">
+                                        <div className="text-emerald-400 mb-1">Take Home (GA)</div>
+                                        <div className="font-mono font-bold text-emerald-300">{formatMoney(taxInfo.takeHome)}</div>
+                                    </div>
                                 </div>
                             </div>
-                            {/* Decorative circles */}
-                            <div className="absolute -top-12 -right-12 w-32 h-32 bg-white/10 rounded-full blur-2xl"></div>
-                            <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-black/20 rounded-full blur-2xl"></div>
                         </div>
 
-                        {/* Action Area */}
+                        {/* 2. MAIN INTERFACE */}
                         {!results ? (
-                            <div className="glass rounded-2xl p-6 text-center">
-                                <div className="mb-6">
-                                    <h3 className="text-lg font-bold text-slate-200">AI Prediction Engine</h3>
-                                    <p className="text-xs text-slate-400 mt-1">Ready to run 12-Step Math Analysis</p>
+                            <div className="glass rounded-2xl p-6 text-center border-t border-white/5">
+                                <div className="mb-8">
+                                    <div className={`w-16 h-16 mx-auto rounded-full bg-gradient-to-br ${currentGame.color} flex items-center justify-center mb-4 shadow-lg`}>
+                                        <span className="text-2xl">🎰</span>
+                                    </div>
+                                    <h2 className="text-xl font-bold text-white mb-1">{currentGame.name} Engine</h2>
+                                    <p className="text-xs text-slate-400">Ready to calculate optimal set</p>
                                 </div>
 
                                 {isAnalyzing ? (
-                                    <div className="space-y-4">
-                                        <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
+                                    <div className="space-y-2">
+                                        <div className="h-10 bg-slate-800 rounded-lg overflow-hidden relative border border-slate-700">
                                             <div 
-                                                className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-150"
+                                                className={`absolute left-0 top-0 h-full ${currentGame.accent} transition-all duration-100 opacity-50`}
                                                 style={{ width: `${progress}%` }}
                                             ></div>
+                                            <div className="absolute inset-0 flex items-center justify-center text-xs font-mono font-bold">
+                                                PROCESSING... {progress}%
+                                            </div>
                                         </div>
-                                        <div className="font-mono text-xs text-blue-400">
-                                            {progress < 20 && "Initializing Monte Carlo..."}
-                                            {progress >= 20 && progress < 40 && "Running Bayesian Updates..."}
-                                            {progress >= 40 && progress < 60 && "Calculating Entropy..."}
-                                            {progress >= 60 && progress < 80 && "Training Neural Network..."}
-                                            {progress >= 80 && "Finalizing Ensemble..."}
-                                        </div>
+                                        <div className="text-[10px] text-slate-500 animate-pulse">Running Monte Carlo Simulations...</div>
                                     </div>
                                 ) : (
                                     <button 
                                         onClick={runAnalysis}
-                                        className="w-full py-4 bg-gradient-to-r from-blue-600 to-violet-600 rounded-xl font-bold text-lg shadow-lg shadow-blue-900/20 hover:scale-[1.02] active:scale-95 transition-all border border-white/10"
+                                        className={`w-full py-4 rounded-xl font-bold text-lg shadow-lg bg-gradient-to-r ${currentGame.color} hover:brightness-110 active:scale-95 transition-all`}
                                     >
-                                        INITIALIZE SYSTEM 🚀
+                                        GENERATE NUMBERS
                                     </button>
                                 )}
                             </div>
                         ) : (
-                            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                                {/* Result Display */}
-                                <div className="glass rounded-2xl p-6 border-t-4 border-yellow-500 relative overflow-hidden">
-                                    <div className="absolute top-0 left-0 w-full h-full bg-yellow-500/5"></div>
-                                    <div className="text-center mb-6 relative z-10">
-                                        <h2 className="text-sm font-bold text-yellow-500 uppercase tracking-widest mb-4">Optimal Combination</h2>
-                                        <div className="flex flex-wrap justify-center gap-3">
-                                            {results.map((num, i) => (
-                                                <div key={i} className="w-12 h-12 bg-white text-slate-900 rounded-full flex items-center justify-center text-xl font-black shadow-xl ring-4 ring-yellow-500/20">
+                            <div className="space-y-4 animate-in slide-in-from-bottom-5 duration-500 fade-in">
+                                {/* RESULT CARD */}
+                                <div className="glass rounded-2xl p-6 relative overflow-hidden">
+                                    <div className={`absolute top-0 left-0 w-full h-1 bg-gradient-to-r ${currentGame.color}`}></div>
+                                    
+                                    <div className="text-center mb-6">
+                                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Optimal Selection</div>
+                                        
+                                        {/* BALL DISPLAY */}
+                                        <div className="flex flex-wrap justify-center items-center gap-2 sm:gap-3">
+                                            {/* Main Balls */}
+                                            {results.main.map((num, i) => (
+                                                <div key={i} className="w-10 h-10 sm:w-12 sm:h-12 bg-white text-slate-900 rounded-full flex items-center justify-center text-lg sm:text-xl font-black ball-shadow relative z-10">
                                                     {num}
                                                 </div>
                                             ))}
+                                            
+                                            {/* Special Ball (if exists) */}
+                                            {results.special !== null && (
+                                                <div className={`w-10 h-10 sm:w-12 sm:h-12 ${currentGame.accent} text-white rounded-full flex items-center justify-center text-lg sm:text-xl font-black ball-shadow relative z-10 ring-2 ring-white/20 ml-2`}>
+                                                    {results.special}
+                                                </div>
+                                            )}
                                         </div>
+                                        
+                                        {/* Labels */}
+                                        {results.special !== null && (
+                                            <div className="flex justify-center gap-16 mt-2 text-[10px] text-slate-500 font-bold">
+                                                <span>Main Numbers</span>
+                                                <span className={currentGame.color.split(' ')[1].replace('to-', 'text-')}>
+                                                    {currentGame.specialName}
+                                                </span>
+                                            </div>
+                                        )}
                                     </div>
 
-                                    {/* Math Stats Grid */}
-                                    <div className="grid grid-cols-2 gap-3 mt-6 relative z-10">
-                                        <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700">
-                                            <div className="text-[10px] text-slate-400 uppercase">Entropy</div>
-                                            <div className="font-mono text-emerald-400">{engineStats.entropy} bits</div>
-                                        </div>
-                                        <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700">
-                                            <div className="text-[10px] text-slate-400 uppercase">Bayesian Conf.</div>
-                                            <div className="font-mono text-blue-400">{engineStats.bayesian}</div>
-                                        </div>
-                                        <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700">
-                                            <div className="text-[10px] text-slate-400 uppercase">Simulation</div>
-                                            <div className="font-mono text-purple-400">Monte Carlo</div>
-                                        </div>
-                                        <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700">
-                                            <div className="text-[10px] text-slate-400 uppercase">Cycle Phase</div>
-                                            <div className="font-mono text-yellow-400">Peak ⬆</div>
-                                        </div>
+                                    {/* Action Buttons */}
+                                    <div className="grid grid-cols-2 gap-3 mt-6">
+                                        <button 
+                                            onClick={resetSystem}
+                                            className="py-3 bg-slate-800 hover:bg-slate-700 rounded-lg font-semibold text-xs border border-slate-700"
+                                        >
+                                            Generate Again
+                                        </button>
+                                        <button 
+                                            className="py-3 bg-slate-800 hover:bg-slate-700 rounded-lg font-semibold text-xs border border-slate-700"
+                                            onClick={() => {
+                                                const nums = results.main.join(', ') + (results.special ? ` + ${results.special}` : '');
+                                                navigator.clipboard.writeText(nums);
+                                                alert('Numbers copied!');
+                                            }}
+                                        >
+                                            Copy Numbers
+                                        </button>
                                     </div>
+                                </div>
 
-                                    <button 
-                                        onClick={runAnalysis}
-                                        className="w-full mt-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-xl font-semibold text-sm transition-colors"
-                                    >
-                                        Run Again
-                                    </button>
+                                <div className="text-center text-[10px] text-slate-600">
+                                    <p>Based on entropy & probability logic.</p>
                                 </div>
                             </div>
                         )}
-
-                        {/* Footer Info */}
-                        <div className="grid grid-cols-2 gap-4">
-                             <div className="p-4 rounded-xl bg-slate-800/50 border border-slate-700/50">
-                                <div className="text-2xl mb-1">🧠</div>
-                                <div className="font-bold text-sm">AI Engines</div>
-                                <div className="text-xs text-slate-400">12 Active Models</div>
-                             </div>
-                             <div className="p-4 rounded-xl bg-slate-800/50 border border-slate-700/50">
-                                <div className="text-2xl mb-1">⚡</div>
-                                <div className="font-bold text-sm">Processing</div>
-                                <div className="text-xs text-slate-400">Client-Side Sim</div>
-                             </div>
-                        </div>
-
-                    </div>
-                    
-                    <div className="p-4 text-center text-[10px] text-slate-600">
-                        Use responsibly. Simulation for entertainment only.
                     </div>
                 </div>
             );
