@@ -1,362 +1,236 @@
 /* global React, ReactDOM */
 
+// --- 🧠 MATH ENGINE (FROM V4) ---
+class StatisticalEngine {
+    constructor(gameConfig, lastDrawData) {
+        this.config = gameConfig;
+        this.history = lastDrawData || { numbers: [] };
+    }
+
+    generateSmartPick() {
+        const pool = [];
+        // Initialize pool with all possible numbers
+        for(let i=1; i<=this.config.mainMax; i++) pool.push(i);
+
+        const weightedPool = [];
+        pool.forEach(num => {
+            let weight = 10; 
+            // "Cooling" Logic: If number hit last time, reduce weight significantly
+            if (this.history.numbers && this.history.numbers.includes(num)) {
+                weight = 1; 
+            }
+            for(let k=0; k<weight; k++) weightedPool.push(num);
+        });
+
+        // Pick Main Numbers
+        const result = new Set();
+        while(result.size < this.config.mainCount) {
+            const idx = Math.floor(Math.random() * weightedPool.length);
+            result.add(weightedPool[idx]);
+        }
+
+        // Pick Special Ball
+        let special = null;
+        if (this.config.hasSpecial) {
+            const specialHistory = this.history.special;
+            do {
+                special = Math.floor(Math.random() * this.config.specialMax) + 1;
+            } while (special === specialHistory && Math.random() > 0.1);
+        }
+
+        return {
+            main: Array.from(result).sort((a,b) => a-b),
+            special
+        };
+    }
+}
+
+// --- ⚙️ GAME CONFIG ---
+const GAMES = [
+  { key: "pb", label: "Powerball", path: "/api/pb", mainMax: 69, mainCount: 5, hasSpecial: true, specialMax: 26, color: "from-red-600 to-red-900" },
+  { key: "mm", label: "Mega Millions", path: "/api/mm", mainMax: 70, mainCount: 5, hasSpecial: true, specialMax: 25, color: "from-yellow-500 to-yellow-700" },
+  { key: "cash4life", label: "Cash4Life", path: "/api/cash4life", mainMax: 60, mainCount: 5, hasSpecial: true, specialMax: 4, color: "from-emerald-600 to-emerald-900" },
+  { key: "ga_fantasy5", label: "GA Fantasy 5", path: "/api/ga/fantasy5", mainMax: 42, mainCount: 5, hasSpecial: false, color: "from-blue-600 to-blue-900" }
+];
+
 const DEFAULT_API_BASE = localStorage.getItem("gaLottoApiBase") || ""; 
-// Example: https://your-worker.yourname.workers.dev  (no trailing slash)
 
 function formatCurrency(n) {
-  if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+  if (!n || isNaN(n)) return "Loading...";
   return Number(n).toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
-
-function formatDateTime(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
-}
-
-function safeJoin(arr) {
-  return Array.isArray(arr) ? arr.join(" ") : "—";
-}
-
-function afterTax(lumpSum, taxRatePct) {
-  const n = Number(lumpSum);
-  const t = Number(taxRatePct) / 100;
-  if (!Number.isFinite(n) || !Number.isFinite(t)) return null;
-  return Math.max(0, n * (1 - t));
-}
-
-const GAMES = [
-  { key: "pb", label: "Powerball", path: "/api/pb" },
-  { key: "mm", label: "Mega Millions", path: "/api/mm" },
-  { key: "cash4life", label: "Cash4Life", path: "/api/cash4life" },
-  { key: "ga_fantasy5", label: "GA Fantasy 5", path: "/api/ga/fantasy5" },
-  { key: "ga_cash3", label: "GA Cash 3", path: "/api/ga/cash3" },
-  { key: "ga_cash4", label: "GA Cash 4", path: "/api/ga/cash4" }
-];
 
 function GeorgiaLotteryHub() {
   const [apiBase, setApiBase] = React.useState(DEFAULT_API_BASE);
   const [selected, setSelected] = React.useState("pb");
   const [data, setData] = React.useState({});
-  const [status, setStatus] = React.useState({ online: navigator.onLine, lastUpdated: null, error: null });
-
-  const [taxRate, setTaxRate] = React.useState(localStorage.getItem("gaLottoTaxRate") || "37");
-  const [lumpSum, setLumpSum] = React.useState("");
-  const [calcOut, setCalcOut] = React.useState(null);
-
-  const [savedPicks, setSavedPicks] = React.useState(() => {
-    try { return JSON.parse(localStorage.getItem("gaLottoSavedPicks") || "[]"); } catch { return []; }
-  });
-
-  const [installPromptEvent, setInstallPromptEvent] = React.useState(null);
+  const [status, setStatus] = React.useState({ online: navigator.onLine, lastUpdated: null });
+  const [prediction, setPrediction] = React.useState(null);
+  const [isCrunching, setIsCrunching] = React.useState(false);
   const [showSettings, setShowSettings] = React.useState(false);
 
-  const selectedGame = GAMES.find(g => g.key === selected) || GAMES[0];
+  // Derived state
+  const activeGame = GAMES.find(g => g.key === selected);
+  const activeData = data[selected] || {};
 
-  function apiUrl(path) {
-    const base = (apiBase || "").replace(/\/+$/, "");
-    if (!base) return null;
-    return base + path;
-  }
-
+  // --- API LOGIC ---
   async function refreshAll() {
-    if (!apiBase) {
-      setStatus(s => ({ ...s, error: "Set your API base URL in Settings." }));
-      return;
-    }
-    setStatus(s => ({ ...s, error: null }));
+    if (!apiBase) return;
     const out = {};
     for (const g of GAMES) {
-      const url = apiUrl(g.path);
       try {
-        const res = await fetch(url, { cache: "no-store" });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        out[g.key] = await res.json();
-      } catch (e) {
-        out[g.key] = { ok: false, error: String(e) };
-      }
+        const res = await fetch(`${apiBase}${g.path}`);
+        if (res.ok) out[g.key] = await res.json();
+      } catch (e) { console.error(e); }
     }
-    setData(out);
-    setStatus(s => ({ ...s, lastUpdated: new Date().toISOString() }));
+    setData(prev => ({ ...prev, ...out }));
+    setStatus(s => ({ ...s, lastUpdated: new Date() }));
   }
-
-  function quickPick(count, max, unique=true) {
-    const nums = new Set();
-    while (nums.size < count) {
-      const n = Math.floor(Math.random() * max) + 1;
-      if (unique) nums.add(n);
-    }
-    return Array.from(nums).sort((a,b)=>a-b);
-  }
-
-  function savePick(gameKey, numbers, note="") {
-    const entry = {
-      id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random(),
-      gameKey,
-      numbers,
-      note,
-      createdAt: new Date().toISOString()
-    };
-    const next = [entry, ...savedPicks].slice(0, 50);
-    setSavedPicks(next);
-    localStorage.setItem("gaLottoSavedPicks", JSON.stringify(next));
-  }
-
-  React.useEffect(() => {
-    function onOnline() { setStatus(s => ({ ...s, online: true })); }
-    function onOffline() { setStatus(s => ({ ...s, online: false })); }
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    return () => {
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-    };
-  }, []);
-
-  React.useEffect(() => {
-    // PWA install prompt
-    const handler = (e) => {
-      e.preventDefault();
-      setInstallPromptEvent(e);
-    };
-    window.addEventListener("beforeinstallprompt", handler);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
-  }, []);
-
-  React.useEffect(() => {
-    if (!apiBase) return;
-    localStorage.setItem("gaLottoApiBase", apiBase);
-  }, [apiBase]);
-
-  React.useEffect(() => {
-    localStorage.setItem("gaLottoTaxRate", taxRate);
-  }, [taxRate]);
 
   React.useEffect(() => {
     refreshAll();
-    const id = setInterval(refreshAll, 5 * 60 * 1000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBase]);
 
-  React.useEffect(() => {
-    const n = Number(lumpSum);
-    const t = Number(taxRate);
-    if (!Number.isFinite(n) || !Number.isFinite(t)) { setCalcOut(null); return; }
-    setCalcOut(afterTax(n, t));
-  }, [lumpSum, taxRate]);
+  // --- MATH LOGIC ---
+  const runPrediction = () => {
+    setIsCrunching(true);
+    setPrediction(null);
+    
+    // Simulate "Thinking" time for UX
+    setTimeout(() => {
+        const engine = new StatisticalEngine(activeGame, activeData);
+        const result = engine.generateSmartPick();
+        setPrediction(result);
+        setIsCrunching(false);
+    }, 800);
+  };
 
-  const selectedData = data[selected] || {};
-
-  function renderNumbersBlock(d) {
-    const nums = d?.numbers || d?.winningNumbers;
-    const mb = d?.multiplier || d?.megaplier;
-    if (!nums) return null;
-    return (
-      <div className="mt-3">
-        <div className="text-slate-300 text-sm">Last draw numbers</div>
-        <div className="text-white text-xl tracking-wide mt-1">{safeJoin(nums)}</div>
-        {mb ? <div className="text-slate-400 text-sm mt-1">Multiplier: {mb}</div> : null}
-        {d?.drawDate ? <div className="text-slate-500 text-xs mt-1">{formatDateTime(d.drawDate)}</div> : null}
-      </div>
-    );
-  }
-
-  async function doInstall() {
-    if (!installPromptEvent) return;
-    installPromptEvent.prompt();
-    try { await installPromptEvent.userChoice; } catch {}
-    setInstallPromptEvent(null);
-  }
-
+  // --- UI COMPONENTS ---
   return (
-    <div className="min-h-screen text-slate-100">
-      <div className="max-w-3xl mx-auto px-4 py-6">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-2xl font-bold">Georgia Lottery Hub</div>
-            <div className="text-slate-400 text-sm">
-              {status.online ? "Online" : "Offline"} 
-              {status.lastUpdated ? <> • Updated {formatDateTime(status.lastUpdated)}</> : null}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            {installPromptEvent ? (
-              <button onClick={doInstall} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
-                Install
-              </button>
-            ) : null}
-            <button onClick={() => setShowSettings(v => !v)} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
-              Settings
-            </button>
-          </div>
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-20">
+      
+      {/* HEADER */}
+      <div className="sticky top-0 z-50 bg-slate-900/80 backdrop-blur border-b border-white/10 px-4 py-4 flex justify-between items-center">
+        <div>
+            <h1 className="text-xl font-bold italic tracking-tighter">GA HUB <span className="text-xs text-emerald-400 align-top">LIVE</span></h1>
         </div>
+        <button onClick={() => setShowSettings(!showSettings)} className="p-2 bg-slate-800 rounded text-xs">
+            {showSettings ? "Close" : "Setup API"}
+        </button>
+      </div>
 
-        {showSettings ? (
-          <div className="mt-4 p-4 rounded-xl bg-slate-900 border border-slate-800">
-            <div className="font-semibold">API Base URL</div>
-            <div className="text-slate-400 text-sm mt-1">
-              Paste your Cloudflare Worker URL (no trailing slash).
-            </div>
-            <input
-              className="mt-3 w-full rounded bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100"
-              placeholder="https://your-worker.yourname.workers.dev"
-              value={apiBase}
-              onChange={(e) => setApiBase(e.target.value)}
+      {/* SETTINGS DRAWER */}
+      {showSettings && (
+        <div className="p-4 bg-slate-900 border-b border-white/10">
+            <label className="text-xs text-gray-400">Worker URL</label>
+            <input 
+                className="w-full bg-black/30 border border-white/20 rounded p-2 text-white mt-1"
+                placeholder="https://your-worker.workers.dev"
+                value={apiBase}
+                onChange={(e) => {
+                    setApiBase(e.target.value);
+                    localStorage.setItem("gaLottoApiBase", e.target.value);
+                }}
             />
-            <div className="mt-3 flex gap-2">
-              <button onClick={refreshAll} className="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">
-                Test + Refresh
-              </button>
-              <button onClick={() => setShowSettings(false)} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
-                Close
-              </button>
-            </div>
-            {status.error ? <div className="text-rose-400 text-sm mt-3">{status.error}</div> : null}
-          </div>
-        ) : null}
+            <button onClick={refreshAll} className="mt-2 w-full bg-indigo-600 py-2 rounded font-bold text-sm">Test Connection</button>
+        </div>
+      )}
 
-        <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {GAMES.map(g => {
-            const d = data[g.key];
-            const jp = d?.jackpot ?? d?.estimatedJackpot ?? null;
-            return (
-              <button
+      {/* GAME SELECTOR */}
+      <div className="p-4 grid grid-cols-4 gap-2">
+        {GAMES.map(g => (
+            <button 
                 key={g.key}
-                onClick={() => setSelected(g.key)}
-                className={
-                  "text-left p-3 rounded-xl border " +
-                  (selected === g.key ? "bg-slate-900 border-indigo-500" : "bg-slate-950 border-slate-800 hover:bg-slate-900")
-                }
-              >
-                <div className="font-semibold">{g.label}</div>
-                <div className="text-slate-400 text-sm mt-1">{jp ? formatCurrency(jp) : "Tap for details"}</div>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="mt-4 p-4 rounded-xl bg-slate-900 border border-slate-800">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-xl font-semibold">{selectedGame.label}</div>
-              <div className="text-slate-400 text-sm mt-1">
-                {selectedData?.nextDraw ? <>Next draw: {formatDateTime(selectedData.nextDraw)}</> : "—"}
-              </div>
-            </div>
-            <button onClick={refreshAll} className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
-              Refresh
+                onClick={() => { setSelected(g.key); setPrediction(null); }}
+                className={`p-2 rounded-lg text-[10px] font-bold transition-all border ${selected === g.key ? 'bg-white text-black border-white' : 'bg-slate-800 text-gray-400 border-slate-700'}`}
+            >
+                {g.label.split(' ')[0]}
             </button>
-          </div>
+        ))}
+      </div>
 
-          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
-              <div className="text-slate-400 text-sm">Estimated jackpot</div>
-              <div className="text-2xl font-bold mt-1">{formatCurrency(selectedData?.jackpot ?? selectedData?.estimatedJackpot)}</div>
-              <div className="text-slate-500 text-sm mt-1">
-                Cash option: {formatCurrency(selectedData?.cash ?? selectedData?.cashValue)}
-              </div>
-              {renderNumbersBlock(selectedData)}
-              {selectedData?.ok === false ? <div className="text-rose-400 text-sm mt-2">API error: {selectedData.error || "Unknown"}</div> : null}
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
-              <div className="font-semibold">After-tax calculator</div>
-              <div className="text-slate-400 text-sm mt-1">Quick estimate on the cash option (or any lump sum).</div>
-
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                <div className="col-span-2">
-                  <label className="text-slate-400 text-xs">Lump sum ($)</label>
-                  <input
-                    className="mt-1 w-full rounded bg-slate-900 border border-slate-800 px-3 py-2"
-                    placeholder="e.g. 120000000"
-                    value={lumpSum}
-                    onChange={(e) => setLumpSum(e.target.value.replace(/[^0-9.]/g, ""))}
-                  />
-                  <div className="text-slate-500 text-xs mt-1">Tip: paste the cash option above.</div>
+      <div className="px-4 space-y-6">
+        
+        {/* JACKPOT CARD */}
+        <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${activeGame.color} p-6 shadow-2xl border border-white/10`}>
+            <div className="relative z-10">
+                <div className="text-xs font-bold text-white/70 uppercase">{activeGame.label}</div>
+                <div className="text-4xl font-black text-white mt-1 tracking-tighter">
+                    {activeData.jackpot ? formatCurrency(activeData.jackpot) : "Loading..."}
                 </div>
-                <div>
-                  <label className="text-slate-400 text-xs">Tax %</label>
-                  <input
-                    className="mt-1 w-full rounded bg-slate-900 border border-slate-800 px-3 py-2"
-                    value={taxRate}
-                    onChange={(e) => setTaxRate(e.target.value.replace(/[^0-9.]/g, ""))}
-                  />
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <div className="text-slate-400 text-sm">Estimated after tax</div>
-                <div className="text-2xl font-bold mt-1">{calcOut === null ? "—" : formatCurrency(calcOut)}</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
-              <div className="font-semibold">Quick Pick generator</div>
-              <div className="text-slate-400 text-sm mt-1">Generate numbers fast, save your favorites.</div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  onClick={() => {
-                    let nums = [];
-                    if (selected === "ga_fantasy5") nums = quickPick(5, 42, true);
-                    else if (selected === "ga_cash3") nums = quickPick(3, 10, false).map(n => n-1); // 0-9
-                    else if (selected === "ga_cash4") nums = quickPick(4, 10, false).map(n => n-1);
-                    else if (selected === "cash4life") nums = [...quickPick(5, 60, true), ...quickPick(1, 4, true)];
-                    else if (selected === "pb") nums = [...quickPick(5, 69, true), ...quickPick(1, 26, true)];
-                    else if (selected === "mm") nums = [...quickPick(5, 70, true), ...quickPick(1, 25, true)];
-                    savePick(selected, nums, "Quick Pick");
-                  }}
-                  className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-sm"
-                >
-                  Generate + Save
-                </button>
-                <button
-                  onClick={() => { localStorage.removeItem("gaLottoSavedPicks"); setSavedPicks([]); }}
-                  className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm"
-                >
-                  Clear saved
-                </button>
-              </div>
-
-              <div className="mt-3 text-slate-500 text-xs">
-                Formats: PB/MM = 5 + Power/Mega ball. Cash4Life = 5 + Cash Ball. GA Cash games = digits.
-              </div>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
-              <div className="font-semibold">Saved picks</div>
-              <div className="text-slate-400 text-sm mt-1">Stored on your device only.</div>
-
-              <div className="mt-3 max-h-56 overflow-auto space-y-2">
-                {savedPicks.length === 0 ? <div className="text-slate-500 text-sm">No saved picks yet.</div> : null}
-                {savedPicks.map(p => (
-                  <div key={p.id} className="p-2 rounded bg-slate-900 border border-slate-800">
-                    <div className="flex justify-between gap-2">
-                      <div className="font-semibold text-sm">{(GAMES.find(g=>g.key===p.gameKey)?.label)||p.gameKey}</div>
-                      <div className="text-slate-500 text-xs">{formatDateTime(p.createdAt)}</div>
+                <div className="mt-4 pt-4 border-t border-white/20 flex justify-between items-end">
+                    <div>
+                        <div className="text-[10px] text-white/60 uppercase">Cash Value</div>
+                        <div className="font-mono font-bold">
+                            {activeData.cash ? formatCurrency(activeData.cash) : "—"}
+                        </div>
                     </div>
-                    <div className="text-white text-lg mt-1">{safeJoin(p.numbers)}</div>
-                    {p.note ? <div className="text-slate-500 text-xs mt-1">{p.note}</div> : null}
-                  </div>
-                ))}
-              </div>
+                    {/* Tax Calc Mini */}
+                    <div className="text-right">
+                         <div className="text-[10px] text-emerald-300 uppercase">Est. Take Home</div>
+                         <div className="font-mono font-bold text-emerald-300">
+                            {activeData.cash ? formatCurrency(activeData.cash * 0.7025) : "—"}
+                         </div>
+                    </div>
+                </div>
             </div>
-          </div>
         </div>
 
-        <div className="text-center text-slate-500 text-xs mt-8">
-          <p>Must be 18+. Play responsibly.</p>
-          <p className="mt-2">Problem gambling? Call 1-800-GAMBLER</p>
+        {/* LAST DRAW NUMBERS */}
+        <div className="bg-slate-900 border border-white/10 rounded-xl p-4">
+            <div className="text-[10px] text-gray-400 uppercase font-bold mb-2">Last Draw Data</div>
+            {activeData.numbers ? (
+                <div className="flex flex-wrap gap-2">
+                    {activeData.numbers.slice(0, activeGame.mainCount).map((n,i) => (
+                        <span key={i} className="w-8 h-8 flex items-center justify-center bg-slate-800 rounded font-mono text-sm border border-slate-700">{n}</span>
+                    ))}
+                    {activeGame.hasSpecial && (
+                        <span className="w-8 h-8 flex items-center justify-center bg-slate-700 rounded font-mono text-sm border border-white/20 text-yellow-400 font-bold">
+                            {activeData.numbers[activeGame.mainCount] || activeData.special}
+                        </span>
+                    )}
+                </div>
+            ) : (
+                <div className="text-xs text-gray-500 italic">Waiting for live data...</div>
+            )}
         </div>
+
+        {/* PREDICTION ENGINE */}
+        <div className="space-y-4">
+            {!prediction ? (
+                <button 
+                    onClick={runPrediction}
+                    disabled={isCrunching || !activeData.numbers}
+                    className={`w-full py-4 rounded-xl font-bold text-lg shadow-lg transition-all ${isCrunching || !activeData.numbers ? 'bg-slate-800 text-gray-500' : 'bg-white text-black hover:scale-[1.02]'}`}
+                >
+                    {isCrunching ? "Analyzing..." : (!activeData.numbers ? "Waiting for Data..." : "Run AI Prediction 🎲")}
+                </button>
+            ) : (
+                <div className="bg-slate-800/50 border border-emerald-500/50 rounded-xl p-6 animate-in slide-in-from-bottom-4">
+                     <div className="flex justify-between items-center mb-4">
+                        <div className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Optimized Set</div>
+                        <button onClick={() => setPrediction(null)} className="text-xs text-gray-400">Reset</button>
+                     </div>
+                     <div className="flex flex-wrap justify-center gap-3">
+                        {prediction.main.map((num, i) => (
+                            <div key={i} className="w-10 h-10 bg-white text-slate-900 rounded-full flex items-center justify-center text-lg font-black">
+                                {num}
+                            </div>
+                        ))}
+                        {prediction.special !== null && (
+                             <div className="w-10 h-10 bg-emerald-500 text-white rounded-full flex items-center justify-center text-lg font-black ring-4 ring-black/20">
+                                {prediction.special}
+                            </div>
+                        )}
+                     </div>
+                </div>
+            )}
+        </div>
+
       </div>
     </div>
   );
 }
 
-// Render
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<GeorgiaLotteryHub />);
